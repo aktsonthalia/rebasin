@@ -288,3 +288,59 @@ def parse_logging_level(logging_level: int | str) -> int:
         )
     else:
         raise TypeError("logging_level must be an int or a str.")
+
+def is_permutation(mat1, mat2, axis):
+
+    if mat1.shape != mat2.shape:
+        return False
+    
+    if torch.equal(mat1, mat2):
+        return False
+
+    sorted1 = torch.sort(mat1, dim=axis).values 
+    sorted2 = torch.sort(mat2, dim=axis).values
+
+    return torch.equal(sorted1, sorted2)
+
+def is_same_permutation(model1, model2, key1, key2, axis):
+    
+        mat11 = model1.state_dict()[key1]
+        mat12 = model1.state_dict()[key2]
+
+        mat21 = model2.state_dict()[key1]
+        mat22 = model2.state_dict()[key2]
+
+def get_different(model1, model2):
+
+    sd1 = model1.state_dict()
+    sd2 = model2.state_dict()
+
+    keys = set(sd1.keys()).intersection(set(sd2.keys()))
+
+    different = [key for key in keys if not torch.equal(sd1[key], sd2[key])]
+
+    return different
+
+def get_permutations(model, permuted_model):
+
+    sd1 = model.state_dict()
+    sd2 = permuted_model.state_dict()
+
+    keys = set(sd1.keys()).intersection(set(sd2.keys()))
+
+    permutations = {key: None for key in keys}
+
+    for key in keys:
+        mat1 = sd1[key]
+        mat2 = sd2[key]
+
+        for axis in range(len(mat1.shape)):
+            if is_permutation(mat1, mat2, axis):
+                permutations[key] = axis
+                break
+    
+    return permutations 
+        
+
+
+
