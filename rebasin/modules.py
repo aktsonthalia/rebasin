@@ -14,6 +14,7 @@ import torch
 from torch import nn
 from torchview import ModuleNode
 
+from rebasin.adapters import AttentionForRebasin
 
 @dataclass
 class Permutation:
@@ -604,19 +605,185 @@ class MultiheadAttentionModule(ModuleBase):
                     0, self.output_permutation.perm_indices
                 )
 
+class AttentionForRebasinModule(ModuleBase):
+    """
+    A module for :class:`nn.MultiheadAttention`.
+    """
+
+    def __init__(
+            self,
+            module_a: nn.Module,
+            module_b: nn.Module,
+            module_node_b: ModuleNode,
+            axis = 0
+    ) -> None:
+        super().__init__(module_a, module_b, module_node_b)
+
+        self.axis = axis
+        if not isinstance(module_a, AttentionForRebasin):
+            raise TypeError(
+                f"Module A is not an AttentionForRebasinModule, but a {type(module_a)}."
+            )
+        if not isinstance(module_b, AttentionForRebasin):
+            raise TypeError(
+                f"Module B is not an AttentionForRebasinModule, but a {type(module_b)}."
+            )
+
+        self._input_permutation: Permutation | None = Permutation(
+            torch.arange(module_b.query_encoder.weight.shape[axis])
+        ) if module_b.query_encoder.weight is not None else None # permuting the columns of query encoder
+
+        self._output_permutation: Permutation | None = Permutation(
+            torch.arange(module_b.key_encoder.weight.shape[axis]) # permuting the columns of key encoder
+        )
+
+        self._input_shape = [self.input_shape[0]]
+
+    @property
+    def input_permutation(self) -> Permutation | None:
+        return self._input_permutation
+
+    @input_permutation.setter
+    def input_permutation(self, perm: Permutation | None) -> None:
+        if self.module_b.query_encoder.weight is None:
+            return
+
+        if (
+                perm is not None
+                and self._input_permutation is not None
+                and len(perm) != len(self._input_permutation)
+        ):
+            raise ValueError(
+                f"Permutation length {len(perm)} does not match "
+                f"input permutation length {len(self._input_permutation)}."
+            )
+        self._input_permutation = perm
+
+    @property
+    def input_permutation_shape(self) -> int:
+        return (
+            self.module_b.query_encoder.weight.shape[self.axis]
+            if self.module_b.query_encoder.weight is not None
+            else 0
+        )
+
+    @property
+    def output_permutation(self) -> Permutation | None:
+        return self._output_permutation
+
+    @output_permutation.setter
+    def output_permutation(self, perm: Permutation | None) -> None:
+        if (
+                perm is not None
+                and self._output_permutation is not None
+                and len(perm) != len(self._output_permutation)
+        ):
+            raise ValueError(
+                f"Permutation length {len(perm)} does not match "
+                f"output permutation length {len(self._output_permutation)}."
+            )
+        self._output_permutation = perm
+
+    @property
+    def output_permutation_shape(self) -> int:
+        return self.module_b.key_encoder.weight.shape[self.axis]
+
+    @property
+    def permutation_to_info(self) -> list[tuple[Permutation, list[PermutationInfo]]]:
+        id_to_info: list[tuple[Permutation, list[PermutationInfo]]] = []
+        if self.input_permutation is not None:
+            id_to_info.append(
+                (
+                    self.input_permutation,
+                    [
+                    PermutationInfo(
+                        self,
+                        self.axis,
+                        self.module_a
+                        .query_encoder.weight,
+                        self.module_b
+                        .query_encoder.weight,
+                    )
+                    ]
+                )
+            )
+        if self.output_permutation is not None:
+            info = [
+                PermutationInfo(
+                    self,
+                    self.axis,
+                    self.module_a
+                    .key_encoder.weight,
+                    self.module_b
+                    .key_encoder.weight,
+                )
+            ]
+
+            if self.module_b.query_encoder.bias is not None:
+                info.append(
+                    PermutationInfo(
+                        self,
+                        0,
+                        self.module_a
+                        .query_encoder.bias,
+                        self.module_b
+                        .query_encoder.bias,
+                    )
+                )
+            
+            if self.module_b.key_encoder.bias is not None:
+                info.append(
+                    PermutationInfo(
+                        self,
+                        0,
+                        self.module_a
+                        .key_encoder.bias,
+                        self.module_b
+                        .key_encoder.bias,
+                    )
+                )
+
+            id_to_info.append((self.output_permutation, info))
+
+        return id_to_info
+
+    def apply_permutations(self, except_axis: int = -1) -> None:
+        if self.input_permutation is not None and except_axis != self.axis:
+            self.permute_parameter(
+                self.module_b.query_encoder.weight,
+                self.axis, self.input_permutation.perm_indices
+            )
+            if self.module_b.query_encoder.bias is not None: 
+                self.permute_parameter(
+                    self.module_b.query_encoder.bias,
+                    0, self.input_permutation.perm_indices
+                )
+        if self.output_permutation is not None and except_axis != self.axis:
+            self.permute_parameter(
+                self.module_b.key_encoder.weight,
+                self.axis, self.output_permutation.perm_indices
+            )
+            if self.module_b.key_encoder.bias is not None:
+                self.permute_parameter(
+                    self.module_b.key_encoder.bias,
+                    0, self.output_permutation.perm_indices
+                )
+
+
 
 MODULE_TYPES = Union[
     ModuleBase,
     DefaultModule,
     OneDimModule,
     InputPermIsOutputPermMultiDimModule,
-    MultiheadAttentionModule
+    AttentionForRebasin,
 ]
 
 SPECIAL_MODULES: dict[Any, object] = {
     nn.LayerNorm: InputPermIsOutputPermMultiDimModule,
     nn.Embedding: InputPermIsOutputPermMultiDimModule,
     nn.MultiheadAttention: MultiheadAttentionModule,
+    AttentionForRebasin: AttentionForRebasinModule
 }
 
 
